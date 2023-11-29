@@ -1,0 +1,72 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+        x:Class="MyFirstAvaloniaSolution.MainWindow"
+        Title="MyFirstAvaloniaSolution">
+    <Grid RowDefinitions="Auto, *, Auto">
+        <!-- Title Bar -->
+        <Grid Grid.Row="0" Background="Orange" Height="40" ColumnDefinitions="*, Auto">
+            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Left">
+            <Label FontWeight="Black">QSOLink</Label>
+            </StackPanel>
+            <Button Grid.Column="1">Menu</Button>
+        </Grid>
+        
+        <!-- Main Body -->
+        <Grid Grid.Row="1" Background="Gray" ColumnDefinitions="200, *">
+            <!-- QSO Input -->
+            <StackPanel Grid.Column="0" Width="200" Background="DarkSlateGray" Margin="5">
+                <TextBlock FontWeight="Black" Margin="0 10" >Date:</TextBlock>
+                <TextBox Watermark="2023-10-28"></TextBox>
+                <TextBlock FontWeight="Black" Margin="0 10" >Time:</TextBlock>
+                <TextBox Watermark="16:34:58.947Z"></TextBox>
+                <TextBlock FontWeight="Black" Margin="0 10" >Callsign:</TextBlock>
+                <TextBox Watermark="Callsign"></TextBox>
+                <TextBlock FontWeight="Black" Margin="0 10" >Band:</TextBlock>
+                <TextBox Watermark="Band"></TextBox>
+                <TextBlock FontWeight="Black" Margin="0 10" >Mode:</TextBlock>
+                <TextBox Watermark="Mode"></TextBox>
+                <!-- <TextBlock FontWeight="Black" Margin="0 10" >City:</TextBlock>
+                <TextBox Watermark="City"></TextBox>
+                <TextBlock FontWeight="Black" Margin="0 10" >State:</TextBlock>
+                <TextBox Watermark="State"></TextBox>
+                <TextBlock FontWeight="Black" Margin="0 10" >County:</TextBlock>
+                <TextBox Watermark="County"></TextBox>
+                <TextBlock FontWeight="Black" Margin="0 10" >Country:</TextBlock>
+                <TextBox Watermark="Country"></TextBox> -->
+                <TextBlock FontWeight="Black" Margin="0 10" >Name:</TextBlock> 
+                <TextBox Watermark="Name"></TextBox>
+                <Grid ColumnDefinitions="*, Auto, *, Auto, *">
+                    <StackPanel Grid.Column="1" >
+                        <TextBlock Margin="0 5">RST Sent</TextBlock>
+                        <TextBox Watermark="RSTs"></TextBox>
+                    </StackPanel>
+                    <StackPanel Grid.Column="3">
+                        <TextBlock Margin="0 5">RST Recv</TextBlock>
+                        <TextBox Watermark="RSTr"></TextBox>
+                    </StackPanel>
+                </Grid>
+                <Grid ColumnDefinitions="*, Auto, Auto, *, Auto, Auto, *">
+                        <TextBlock Grid.Column="1" Margin="0 5">QSL Sent</TextBlock>
+                        <CheckBox Grid.Column="2"></CheckBox>
+                        <TextBlock Grid.Column="4" Margin="0 5">QSL Recv</TextBlock>
+                        <CheckBox Grid.Column="5"></CheckBox>
+                </Grid>
+            </StackPanel>    
+            
+            <!-- QSO Database View -->
+            <DataGrid Grid.Column="0" GridLinesVisibility="All" Background="Olive" Margin="5"></DataGrid>
+        </Grid>
+        
+        <!-- Bottom Bar -->
+        <Grid Grid.Row="2" Background="Green" Height="40" ColumnDefinitions="*, Auto, Auto, Auto, *">
+            <Rectangle Grid.Column="0"></Rectangle>
+            <Label Grid.Column="1" Width="100" HorizontalAlignment="Left">14.070Mhz</Label>
+            <Label Grid.Column="2" Width="100" HorizontalAlignment="Center">100W</Label>
+            <Label Grid.Column="3" Width="100" HorizontalAlignment="Right">USB</Label>
+            <Rectangle Grid.Column="4"></Rectangle>
+        </Grid> 
+   </Grid> 
+</Window>
