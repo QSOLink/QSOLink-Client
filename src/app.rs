@@ -1,9 +1,11 @@
 use crate::db::Database;
 use crate::models::{validate_callsign, Contact, BANDS, MODES};
+use crate::remote_db::{DatabaseConfig, DatabaseType, RemoteDatabase};
 use eframe::egui;
 
 pub struct QsoApp {
     db: Database,
+    remote_db: Option<RemoteDatabase>,
     contacts: Vec<Contact>,
     search_query: String,
     new_contact: Contact,
@@ -19,7 +21,9 @@ pub struct QsoApp {
     show_qrz_settings: bool,
     credential_store: crate::security::CredentialStore,
     show_db_settings: bool,
-    db_config: crate::remote_db::DatabaseConfig,
+    db_config: DatabaseConfig,
+    use_remote_db: bool,
+    connection_test_result: Option<String>,
 }
 
 impl QsoApp {
@@ -42,6 +46,7 @@ impl QsoApp {
 
         Self {
             db,
+            remote_db: None,
             contacts,
             search_query: String::new(),
             new_contact,
@@ -51,13 +56,15 @@ impl QsoApp {
             contact_to_delete: None,
             qrz_client: None,
             qrz_username,
-            qrz_password,
             qrz_username_backup: String::new(),
             qrz_password_backup: String::new(),
             show_qrz_settings: false,
             credential_store,
             show_db_settings: false,
-            db_config: crate::remote_db::DatabaseConfig::default(),
+            db_config: DatabaseConfig::default(),
+            use_remote_db: false,
+            connection_test_result: None,
+            qrz_password,
         }
     }
 
@@ -84,6 +91,26 @@ impl QsoApp {
             }
         }
 
+        if self.use_remote_db {
+            if let Some(ref remote_db) = self.remote_db {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(remote_db.insert_contact(&self.new_contact)) {
+                    Ok(id) => {
+                        self.status_message = format!(
+                            "Contact {} added to remote DB (ID: {})",
+                            self.new_contact.call_sign, id
+                        );
+                        self.new_contact = Contact::new(String::new());
+                        self.refresh_contacts();
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Error adding contact to remote DB: {}", e);
+                    }
+                }
+                return;
+            }
+        }
+
         match self.db.insert_contact(&self.new_contact) {
             Ok(id) => {
                 self.status_message =
@@ -98,6 +125,19 @@ impl QsoApp {
     }
 
     fn refresh_contacts(&mut self) {
+        if self.use_remote_db {
+            if let Some(ref remote_db) = self.remote_db {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                self.contacts = if self.search_query.is_empty() {
+                    rt.block_on(remote_db.get_all_contacts())
+                        .unwrap_or_default()
+                } else {
+                    rt.block_on(remote_db.search_contacts(&self.search_query))
+                        .unwrap_or_default()
+                };
+                return;
+            }
+        }
         self.contacts = if self.search_query.is_empty() {
             self.db.get_all_contacts().unwrap_or_default()
         } else {
@@ -112,6 +152,21 @@ impl QsoApp {
     }
 
     fn delete_contact(&mut self, id: i64) {
+        if self.use_remote_db {
+            if let Some(ref remote_db) = self.remote_db {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                match rt.block_on(remote_db.delete_contact(id)) {
+                    Ok(_) => {
+                        self.status_message = format!("Contact {} deleted from remote DB", id);
+                        self.refresh_contacts();
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Error deleting from remote DB: {}", e);
+                    }
+                }
+                return;
+            }
+        }
         match self.db.delete_contact(id) {
             Ok(_) => {
                 self.status_message = format!("Contact {} deleted", id);
@@ -377,26 +432,40 @@ impl eframe::App for QsoApp {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.label("Database Configuration");
-                    ui.label("(Remote database support coming soon)");
                     ui.separator();
 
+                    let is_connected = self
+                        .remote_db
+                        .as_ref()
+                        .map(|r| r.is_connected())
+                        .unwrap_or(false);
+
+                    if is_connected {
+                        ui.label("Status: Connected to remote database");
+                    } else if self.use_remote_db {
+                        ui.label("Status: Using local SQLite database");
+                    } else {
+                        ui.label("Status: Using local SQLite database");
+                    }
+
+                    ui.separator();
                     ui.label("Database Type:");
                     egui::ComboBox::from_id_salt("db_type_combo")
                         .selected_text(format!("{:?}", self.db_config.db_type))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut self.db_config.db_type,
-                                crate::remote_db::DatabaseType::SQLite,
+                                DatabaseType::SQLite,
                                 "SQLite (Local)",
                             );
                             ui.selectable_value(
                                 &mut self.db_config.db_type,
-                                crate::remote_db::DatabaseType::PostgreSQL,
+                                DatabaseType::PostgreSQL,
                                 "PostgreSQL",
                             );
                             ui.selectable_value(
                                 &mut self.db_config.db_type,
-                                crate::remote_db::DatabaseType::MySQL,
+                                DatabaseType::MySQL,
                                 "MySQL",
                             );
                         });
@@ -405,19 +474,94 @@ impl eframe::App for QsoApp {
                     ui.text_edit_singleline(&mut self.db_config.connection_string);
 
                     ui.label("Example:");
-                    ui.label(crate::remote_db::RemoteDatabase::connection_string_example(
-                        &self.db_config.db_type,
-                    ));
+                    ui.label(RemoteDatabase::connection_string_example(&self.db_config.db_type));
+
+                    if let Some(ref result) = self.connection_test_result {
+                        ui.separator();
+                        ui.label(result);
+                    }
 
                     ui.separator();
                     ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
+                        if !is_connected {
+                            if ui.button("Test Connection").clicked() {
+                                let config = self.db_config.clone();
+                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                self.connection_test_result = Some("Testing connection...".to_string());
+                                match rt.block_on(async {
+                                    let test_db = RemoteDatabase::new(config);
+                                    test_db.test_connection().await
+                                }) {
+                                    Ok(true) => {
+                                        self.connection_test_result =
+                                            Some("Connection successful!".to_string());
+                                    }
+                                    Ok(false) => {
+                                        self.connection_test_result =
+                                            Some("Connection failed".to_string());
+                                    }
+                                    Err(e) => {
+                                        self.connection_test_result =
+                                            Some(format!("Error: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        if !is_connected {
+                            if ui.button("Connect").clicked() {
+                                let config = self.db_config.clone();
+                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                match rt.block_on(async {
+                                    let mut remote_db = RemoteDatabase::new(config);
+                                    remote_db.connect().await?;
+                                    remote_db.create_table_if_not_exists().await?;
+                                    Ok::<_, String>(remote_db)
+                                }) {
+                                    Ok(remote_db) => {
+                                        self.remote_db = Some(remote_db);
+                                        self.use_remote_db = true;
+                                        self.connection_test_result =
+                                            Some("Connected successfully!".to_string());
+                                        self.status_message =
+                                            "Connected to remote database".to_string();
+                                        self.refresh_contacts();
+                                    }
+                                    Err(e) => {
+                                        self.connection_test_result =
+                                            Some(format!("Connection failed: {}", e));
+                                        self.status_message =
+                                            format!("Connection failed: {}", e);
+                                    }
+                                }
+                            }
+                        } else {
+                            if ui.button("Disconnect").clicked() {
+                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                if let Some(ref mut remote_db) = self.remote_db {
+                                    let _ = rt.block_on(remote_db.disconnect());
+                                }
+                                self.remote_db = None;
+                                self.use_remote_db = false;
+                                self.connection_test_result =
+                                    Some("Disconnected from remote database".to_string());
+                                self.status_message = "Disconnected from remote database".to_string();
+                                self.refresh_contacts();
+                            }
+                        }
+                    });
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Save & Close").clicked() {
                             self.show_db_settings = false;
-                            self.status_message =
-                                "Database config saved (remote DB coming soon)".to_string();
+                            self.connection_test_result = None;
                         }
                         if ui.button("Cancel").clicked() {
                             self.show_db_settings = false;
+                            self.connection_test_result = None;
                             self.status_message = "Database settings unchanged".to_string();
                         }
                     });
