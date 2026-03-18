@@ -29,6 +29,10 @@ pub struct QsoApp {
     rig_client: Option<RigCtlClient>,
     rig_config: RigConfig,
     rig_status_message: Option<String>,
+    show_theme_settings: bool,
+    current_theme: String,
+    show_callsign_details: Option<Contact>,
+    callsign_suggestions: Vec<Contact>,
 }
 
 impl QsoApp {
@@ -74,6 +78,10 @@ impl QsoApp {
             rig_client: None,
             rig_config: RigConfig::default(),
             rig_status_message: None,
+            show_theme_settings: false,
+            current_theme: "Dark".to_string(),
+            show_callsign_details: None,
+            callsign_suggestions: Vec::new(),
         }
     }
 
@@ -134,6 +142,8 @@ impl QsoApp {
     }
 
     fn refresh_contacts(&mut self) {
+        log::info!("refresh_contacts called with query: '{}'", self.search_query);
+        
         if self.use_remote_db {
             if let Some(ref remote_db) = self.remote_db {
                 let rt = tokio::runtime::Runtime::new().unwrap();
@@ -147,17 +157,23 @@ impl QsoApp {
                 return;
             }
         }
-        self.contacts = if self.search_query.is_empty() {
+        
+        let mut filtered_contacts: Vec<Contact> = if self.search_query.is_empty() {
             self.db.get_all_contacts().unwrap_or_default()
         } else {
-            self.db
-                .search_contacts(&self.search_query)
-                .unwrap_or_default()
+            let results = self.db.search_contacts(&self.search_query).unwrap_or_default();
+            log::info!("SQL returned {} results", results.len());
+            results
         };
-    }
-
-    fn search(&mut self) {
-        self.refresh_contacts();
+        
+        if !self.search_query.is_empty() {
+            let query_lower = self.search_query.to_lowercase();
+            let before_count = filtered_contacts.len();
+            filtered_contacts.retain(|c| c.call_sign.to_lowercase().starts_with(&query_lower));
+            log::info!("After Rust filter: {} -> {} results", before_count, filtered_contacts.len());
+        }
+        
+        self.contacts = filtered_contacts;
     }
 
     fn delete_contact(&mut self, id: i64) {
@@ -230,6 +246,7 @@ impl QsoApp {
 
     fn do_lookup(&mut self) {
         let callsign = self.new_contact.call_sign.clone().trim().to_string();
+        log::info!("QRZ lookup called for: {}", callsign);
 
         if callsign.is_empty() {
             self.status_message = "Enter a callsign first".to_string();
@@ -245,6 +262,7 @@ impl QsoApp {
             if self.qrz_username.is_empty() || self.qrz_password.is_empty() {
                 self.status_message =
                     "Configure QRZ credentials first (click Settings)".to_string();
+                log::warn!("QRZ credentials not configured");
                 return;
             }
             self.qrz_client = Some(crate::qrz::QrzClient::new(
@@ -278,6 +296,16 @@ impl QsoApp {
                     }
                 } else if let Some(ref country) = qrz.country {
                     self.new_contact.qth = country.clone();
+                }
+                
+                if let Some(ref addr2) = qrz.addr2 {
+                    self.new_contact.city = Some(addr2.clone());
+                }
+                if let Some(ref state) = qrz.state {
+                    self.new_contact.state = Some(state.clone());
+                }
+                if let Some(ref grid) = qrz.grid {
+                    self.new_contact.grid_square = Some(grid.clone());
                 }
 
                 self.status_message = format!("Found: {} - {}", qrz.call, self.new_contact.name);
@@ -314,6 +342,15 @@ impl QsoApp {
                                 }
                             } else if let Some(ref country) = qrz.country {
                                 self.new_contact.qth = country.clone();
+                            }
+                            if let Some(ref addr2) = qrz.addr2 {
+                                self.new_contact.city = Some(addr2.clone());
+                            }
+                            if let Some(ref state) = qrz.state {
+                                self.new_contact.state = Some(state.clone());
+                            }
+                            if let Some(ref grid) = qrz.grid {
+                                self.new_contact.grid_square = Some(grid.clone());
                             }
                             self.status_message =
                                 format!("Found: {} - {}", qrz.call, self.new_contact.name);
@@ -397,6 +434,63 @@ impl QsoApp {
     fn is_rig_connected(&self) -> bool {
         self.rig_client.as_ref().map(|c| c.state().connected).unwrap_or(false)
     }
+
+    fn apply_theme(&self, ctx: &egui::Context) {
+        let visuals = match self.current_theme.as_str() {
+            "Dark" => egui::Visuals::dark(),
+            "Light" => egui::Visuals::light(),
+            "Dark Blue" => {
+                let mut v = egui::Visuals::dark();
+                v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0x1e, 0x3e, 0x5e);
+                v.widgets.noninteractive.bg_stroke.color = egui::Color32::from_rgb(0x2d, 0x5d, 0x8d);
+                v
+            }
+            "Monokai" => {
+                let mut v = egui::Visuals::dark();
+                v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0x27, 0x28, 0x22);
+                v.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(0xf8, 0xf8, 0xf2);
+                v
+            }
+            "One Dark" => {
+                let mut v = egui::Visuals::dark();
+                v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0x28, 0x2c, 0x34);
+                v.widgets.noninteractive.bg_stroke.color = egui::Color32::from_rgb(0x3e, 0x44, 0x52);
+                v
+            }
+            "Solarized Dark" => {
+                let mut v = egui::Visuals::dark();
+                v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0x00, 0x2b, 0x36);
+                v.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(0x83, 0x96, 0xa5);
+                v
+            }
+            "Solarized Light" => {
+                let mut v = egui::Visuals::light();
+                v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0xf6, 0xf6, 0xe4);
+                v.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(0x65, 0x7b, 0x8a);
+                v
+            }
+            "Dracula" => {
+                let mut v = egui::Visuals::dark();
+                v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0x28, 0x29, 0x33);
+                v.widgets.noninteractive.bg_stroke.color = egui::Color32::from_rgb(0x62, 0x4e, 0x69);
+                v
+            }
+            "Gruvbox Dark" => {
+                let mut v = egui::Visuals::dark();
+                v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0x28, 0x20, 0x18);
+                v.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(0xeb, 0xdb, 0xb2);
+                v
+            }
+            "Nord" => {
+                let mut v = egui::Visuals::dark();
+                v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0x2e, 0x34, 0x40);
+                v.widgets.noninteractive.bg_stroke.color = egui::Color32::from_rgb(0x4c, 0x56, 0x6a);
+                v
+            }
+            _ => egui::Visuals::dark(),
+        };
+        ctx.set_visuals(visuals);
+    }
 }
 
 impl eframe::App for QsoApp {
@@ -406,27 +500,7 @@ impl eframe::App for QsoApp {
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("QSOLink - Ham Radio Logger");
-                ui.separator();
-                if ui.button("Export ADIF").clicked() {
-                    self.export_adif();
-                }
-                if ui.button("Export Cabrillo").clicked() {
-                    self.export_cabrillo();
-                }
-                ui.separator();
-                if ui.button("QRZ Settings").clicked() {
-                    self.qrz_username_backup = self.qrz_username.clone();
-                    self.qrz_password_backup = self.qrz_password.clone();
-                    self.show_qrz_settings = !self.show_qrz_settings;
-                }
-                ui.separator();
-                if ui.button("Database Settings").clicked() {
-                    self.show_db_settings = !self.show_db_settings;
-                }
-                ui.separator();
-                if ui.button("Rig Settings").clicked() {
-                    self.show_rig_settings = !self.show_rig_settings;
-                }
+                
                 ui.separator();
                 
                 let is_connected = self.is_rig_connected();
@@ -438,6 +512,35 @@ impl eframe::App for QsoApp {
                 } else {
                     ui.colored_label(egui::Color32::RED, "\u{25CB} Disconnected");
                 }
+                
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    egui::ComboBox::from_id_salt("hamburger_menu")
+                        .selected_text("\u{2630}")
+                        .show_ui(ui, |ui| {
+                            if ui.button("Export ADIF").clicked() {
+                                self.export_adif();
+                            }
+                            if ui.button("Export Cabrillo").clicked() {
+                                self.export_cabrillo();
+                            }
+                            ui.separator();
+                            if ui.button("QRZ Settings").clicked() {
+                                self.qrz_username_backup = self.qrz_username.clone();
+                                self.qrz_password_backup = self.qrz_password.clone();
+                                self.show_qrz_settings = true;
+                            }
+                            if ui.button("Database Settings").clicked() {
+                                self.show_db_settings = true;
+                            }
+                            if ui.button("Rig Settings").clicked() {
+                                self.show_rig_settings = true;
+                            }
+                            ui.separator();
+                            if ui.button("Color Theme").clicked() {
+                                self.show_theme_settings = true;
+                            }
+                        });
+                });
             });
         });
 
@@ -727,6 +830,45 @@ impl eframe::App for QsoApp {
                 });
         }
 
+        if self.show_theme_settings {
+            egui::Window::new("Color Theme")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Select Color Theme");
+                    ui.separator();
+                    
+                    let themes = vec![
+                        "Dark",
+                        "Light", 
+                        "Dark Blue",
+                        "Monokai",
+                        "One Dark",
+                        "Solarized Dark",
+                        "Solarized Light",
+                        "Dracula",
+                        "Gruvbox Dark",
+                        "Nord",
+                    ];
+                    
+                    for theme in themes {
+                        let is_selected = self.current_theme == theme;
+                        if ui.selectable_label(is_selected, theme).clicked() {
+                            self.current_theme = theme.to_string();
+                            self.apply_theme(ctx);
+                        }
+                    }
+                    
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Close").clicked() {
+                            self.show_theme_settings = false;
+                        }
+                    });
+                });
+        }
+
         egui::SidePanel::left("input_panel")
             .min_width(350.0)
             .show(ctx, |ui| {
@@ -735,11 +877,49 @@ impl eframe::App for QsoApp {
 
                 ui.label("Call Sign *");
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.new_contact.call_sign);
+                    let call_response = ui.text_edit_singleline(&mut self.new_contact.call_sign);
+                    if call_response.changed() {
+                        let query = self.new_contact.call_sign.to_lowercase();
+                        if query.len() >= 1 {
+                            self.callsign_suggestions = self.contacts.iter()
+                                .filter(|c| c.call_sign.to_lowercase().starts_with(&query))
+                                .take(5)
+                                .cloned()
+                                .collect();
+                        } else {
+                            self.callsign_suggestions.clear();
+                        }
+                    }
                     if ui.button("QRZ Lookup").clicked() {
                         self.do_lookup();
                     }
                 });
+                
+                if !self.callsign_suggestions.is_empty() {
+                    ui.label("Suggestions:");
+                    let suggestions: Vec<Contact> = self.callsign_suggestions.clone();
+                    for suggestion in &suggestions {
+                        let label = format!("{} - {} ({})", suggestion.call_sign, suggestion.name, suggestion.qth);
+                        if ui.selectable_label(false, &label).clicked() {
+                            self.new_contact.call_sign = suggestion.call_sign.clone();
+                            self.new_contact.name = suggestion.name.clone();
+                            self.new_contact.qth = suggestion.qth.clone();
+                            self.new_contact.band = suggestion.band.clone();
+                            self.new_contact.mode = suggestion.mode.clone();
+                            self.new_contact.frequency = suggestion.frequency;
+                            if let Some(ref city) = suggestion.city {
+                                self.new_contact.city = Some(city.clone());
+                            }
+                            if let Some(ref state) = suggestion.state {
+                                self.new_contact.state = Some(state.clone());
+                            }
+                            if let Some(ref grid) = suggestion.grid_square {
+                                self.new_contact.grid_square = Some(grid.clone());
+                            }
+                            self.callsign_suggestions.clear();
+                        }
+                    }
+                }
 
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
@@ -822,9 +1002,9 @@ impl eframe::App for QsoApp {
             ui.heading("Contacts");
             ui.horizontal(|ui| {
                 ui.label("Search:");
-                ui.text_edit_singleline(&mut self.search_query);
-                if ui.button("Search").clicked() {
-                    self.search();
+                let search_changed = ui.text_edit_singleline(&mut self.search_query).changed();
+                if search_changed {
+                    self.refresh_contacts();
                 }
                 if ui.button("Clear").clicked() {
                     self.search_query.clear();
@@ -836,7 +1016,7 @@ impl eframe::App for QsoApp {
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 egui::Grid::new("contacts_grid")
-                    .num_columns(7)
+                    .num_columns(8)
                     .spacing([10.0, 5.0])
                     .striped(true)
                     .show(ui, |ui| {
@@ -847,23 +1027,84 @@ impl eframe::App for QsoApp {
                         ui.label("Band");
                         ui.label("Mode");
                         ui.label("RST");
+                        ui.label("QSOs");
                         ui.end_row();
 
                         for contact in &self.contacts {
                             ui.label(&contact.qso_date);
                             ui.label(&contact.qso_time);
-                            ui.label(&contact.call_sign);
+                            let call_response = ui.selectable_label(false, &contact.call_sign);
+                            if call_response.clicked() {
+                                self.show_callsign_details = Some(contact.clone());
+                            }
                             ui.label(&contact.name);
                             ui.label(&contact.band);
                             ui.label(&contact.mode);
 
                             let rst = format!("{} / {}", contact.rst_sent, contact.rst_recv);
                             ui.label(rst);
+                            if contact.qso_count > 1 {
+                                ui.colored_label(egui::Color32::GOLD, format!("{}", contact.qso_count));
+                            } else {
+                                ui.label("");
+                            }
                             ui.end_row();
                         }
                     });
             });
         });
+
+        if let Some(contact) = self.show_callsign_details.clone() {
+            let contact = contact;
+            egui::Window::new("Callsign Details")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.heading(&contact.call_sign);
+                    ui.separator();
+                    ui.label(format!("Name: {}", contact.name));
+                    ui.label(format!("QTH: {}", contact.qth));
+                    if let Some(ref city) = contact.city {
+                        if !city.is_empty() {
+                            ui.label(format!("City: {}", city));
+                        }
+                    }
+                    if let Some(ref state) = contact.state {
+                        if !state.is_empty() {
+                            ui.label(format!("State: {}", state));
+                        }
+                    }
+                    if let Some(ref county) = contact.county {
+                        if !county.is_empty() {
+                            ui.label(format!("County: {}", county));
+                        }
+                    }
+                    if let Some(ref grid) = contact.grid_square {
+                        if !grid.is_empty() {
+                            ui.label(format!("Grid: {}", grid));
+                        }
+                    }
+                    ui.label(format!("Band: {}", contact.band));
+                    ui.label(format!("Mode: {}", contact.mode));
+                    ui.label(format!("Frequency: {:.3} MHz", contact.frequency));
+                    ui.label(format!("RST Sent: {}", contact.rst_sent));
+                    ui.label(format!("RST Recv: {}", contact.rst_recv));
+                    ui.label(format!("Date: {}", contact.qso_date));
+                    ui.label(format!("Time: {}", contact.qso_time));
+                    ui.label(format!("Total QSOs with {}: {}", contact.call_sign, contact.qso_count));
+                    if !contact.notes.is_empty() {
+                        ui.label(format!("Notes: {}", contact.notes));
+                    }
+                    
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Close").clicked() {
+                            self.show_callsign_details = None;
+                        }
+                    });
+                });
+        }
 
         if self.show_delete_confirm {
             egui::Window::new("Confirm Delete")

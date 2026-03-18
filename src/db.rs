@@ -26,10 +26,29 @@ impl Database {
                 notes TEXT,
                 qso_date TEXT,
                 qso_time TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                qso_count INTEGER DEFAULT 1,
+                city TEXT,
+                state TEXT,
+                county TEXT,
+                grid_square TEXT
             )",
             [],
         )?;
+
+        conn.execute(
+            "ALTER TABLE contacts ADD COLUMN qso_count INTEGER DEFAULT 1",
+            [],
+        )
+        .ok();
+        conn.execute("ALTER TABLE contacts ADD COLUMN city TEXT", [])
+            .ok();
+        conn.execute("ALTER TABLE contacts ADD COLUMN state TEXT", [])
+            .ok();
+        conn.execute("ALTER TABLE contacts ADD COLUMN county TEXT", [])
+            .ok();
+        conn.execute("ALTER TABLE contacts ADD COLUMN grid_square TEXT", [])
+            .ok();
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -38,9 +57,31 @@ impl Database {
 
     pub fn insert_contact(&self, contact: &Contact) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
+
+        let existing: Option<i64> = conn.query_row(
+            "SELECT id FROM contacts WHERE call_sign = ?1 AND band = ?2 AND qso_date = ?3 LIMIT 1",
+            params![contact.call_sign, contact.band, contact.qso_date],
+            |row| row.get(0)
+        ).ok();
+
+        if let Some(existing_id) = existing {
+            conn.execute(
+                "UPDATE contacts SET qso_count = qso_count + 1, qso_time = ?1, rst_sent = ?2, rst_recv = ?3, frequency = ?4, mode = ?5 WHERE id = ?6",
+                params![
+                    contact.qso_time,
+                    contact.rst_sent,
+                    contact.rst_recv,
+                    contact.frequency,
+                    contact.mode,
+                    existing_id
+                ],
+            )?;
+            return Ok(existing_id);
+        }
+
         conn.execute(
-            "INSERT INTO contacts (call_sign, name, qth, frequency, band, mode, rst_sent, rst_recv, notes, qso_date, qso_time)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO contacts (call_sign, name, qth, frequency, band, mode, rst_sent, rst_recv, notes, qso_date, qso_time, qso_count, city, state, county, grid_square)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 contact.call_sign,
                 contact.name,
@@ -53,6 +94,11 @@ impl Database {
                 contact.notes,
                 contact.qso_date,
                 contact.qso_time,
+                contact.qso_count,
+                contact.city,
+                contact.state,
+                contact.county,
+                contact.grid_square,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -61,7 +107,7 @@ impl Database {
     pub fn get_all_contacts(&self) -> Result<Vec<Contact>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, call_sign, name, qth, frequency, band, mode, rst_sent, rst_recv, notes, qso_date, qso_time, created_at
+            "SELECT id, call_sign, name, qth, frequency, band, mode, rst_sent, rst_recv, notes, qso_date, qso_time, created_at, qso_count, city, state, county, grid_square
              FROM contacts ORDER BY id DESC"
         )?;
 
@@ -81,6 +127,11 @@ impl Database {
                     qso_date: row.get(10)?,
                     qso_time: row.get(11)?,
                     created_at: row.get(12)?,
+                    qso_count: row.get::<_, Option<i32>>(13)?.unwrap_or(1),
+                    city: row.get(14)?,
+                    state: row.get(15)?,
+                    county: row.get(16)?,
+                    grid_square: row.get(17)?,
                 })
             })?
             .collect::<Result<Vec<_>>>()?;
@@ -90,10 +141,10 @@ impl Database {
 
     pub fn search_contacts(&self, query: &str) -> Result<Vec<Contact>> {
         let conn = self.conn.lock().unwrap();
-        let search_pattern = format!("%{}%", query);
+        let search_pattern = format!("{}%", query);
         let mut stmt = conn.prepare(
-            "SELECT id, call_sign, name, qth, frequency, band, mode, rst_sent, rst_recv, notes, qso_date, qso_time, created_at
-             FROM contacts WHERE call_sign LIKE ?1 OR name LIKE ?1 OR qth LIKE ?1 ORDER BY id DESC"
+            "SELECT id, call_sign, name, qth, frequency, band, mode, rst_sent, rst_recv, notes, qso_date, qso_time, created_at, qso_count, city, state, county, grid_square
+             FROM contacts WHERE call_sign LIKE ?1 ORDER BY call_sign, id DESC"
         )?;
 
         let contacts = stmt
@@ -112,6 +163,11 @@ impl Database {
                     qso_date: row.get(10)?,
                     qso_time: row.get(11)?,
                     created_at: row.get(12)?,
+                    qso_count: row.get::<_, Option<i32>>(13)?.unwrap_or(1),
+                    city: row.get(14)?,
+                    state: row.get(15)?,
+                    county: row.get(16)?,
+                    grid_square: row.get(17)?,
                 })
             })?
             .collect::<Result<Vec<_>>>()?;

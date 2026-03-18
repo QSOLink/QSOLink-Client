@@ -101,7 +101,10 @@ impl QrzClient {
     }
 
     pub fn lookup(&mut self, callsign: &str) -> Result<Option<QrzCallsign>, String> {
+        log::info!("QRZ lookup for: {}", callsign);
+
         if self.session_key.is_none() {
+            log::info!("No session key, logging in...");
             self.login()?;
         }
 
@@ -118,15 +121,20 @@ impl QrzClient {
 
         let text = response.text().map_err(|e| format!("Read failed: {}", e))?;
 
+        log::debug!("QRZ response: {}", &text[..text.len().min(500)]);
+
         let qrz: QrzResponse =
             serde_xml_rs::from_str(&text).map_err(|e| format!("Parse failed: {}", e))?;
 
         if let Some(cs) = qrz.callsign {
-            if cs.error.is_some() {
+            if let Some(ref err) = cs.error {
+                log::warn!("QRZ error: {}", err);
                 return Ok(None);
             }
+            log::info!("QRZ found: {}", cs.call);
             Ok(Some(cs))
         } else {
+            log::info!("QRZ no result for: {}", callsign);
             Ok(None)
         }
     }

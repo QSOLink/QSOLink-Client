@@ -17,6 +17,11 @@ pub struct Contact {
     pub qso_date: String,
     pub qso_time: String,
     pub created_at: Option<String>,
+    pub qso_count: i32,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub county: Option<String>,
+    pub grid_square: Option<String>,
 }
 
 #[derive(Debug)]
@@ -48,6 +53,11 @@ impl Contact {
             qso_date: now.format("%Y-%m-%d").to_string(),
             qso_time: now.format("%H%M").to_string(),
             created_at: None,
+            qso_count: 1,
+            city: None,
+            state: None,
+            county: None,
+            grid_square: None,
         }
     }
 
