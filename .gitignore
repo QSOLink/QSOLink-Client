@@ -1,0 +1,31 @@
+# Build artifacts
+/target/
+**/target/
+
+# Cargo lock (optional - uncomment if you want to commit)
+# Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+qso.db
+*.db
+
+# Logs
+*.log
+
+# Credentials (sensitive)
+credentials.enc
+
+# Environment
+.env
+.env.local
