@@ -1,6 +1,7 @@
 use crate::db::Database;
 use crate::models::{validate_callsign, Contact, BANDS, MODES};
 use crate::remote_db::{DatabaseConfig, DatabaseType, RemoteDatabase};
+use crate::rigctl::{RigCtlClient, RigConfig};
 use eframe::egui;
 
 pub struct QsoApp {
@@ -24,6 +25,10 @@ pub struct QsoApp {
     db_config: DatabaseConfig,
     use_remote_db: bool,
     connection_test_result: Option<String>,
+    show_rig_settings: bool,
+    rig_client: Option<RigCtlClient>,
+    rig_config: RigConfig,
+    rig_status_message: Option<String>,
 }
 
 impl QsoApp {
@@ -65,6 +70,10 @@ impl QsoApp {
             use_remote_db: false,
             connection_test_result: None,
             qrz_password,
+            show_rig_settings: false,
+            rig_client: None,
+            rig_config: RigConfig::default(),
+            rig_status_message: None,
         }
     }
 
@@ -319,10 +328,81 @@ impl QsoApp {
             }
         }
     }
+
+    fn rig_connect(&mut self) {
+        let config = self.rig_config.clone();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        
+        match rt.block_on(async {
+            let mut client = RigCtlClient::new(config);
+            client.connect().await?;
+            client.update_state().await;
+            Ok::<_, String>(client)
+        }) {
+            Ok(client) => {
+                self.rig_client = Some(client);
+                self.rig_status_message = Some("Connected to rig".to_string());
+                self.status_message = "Connected to transceiver".to_string();
+                
+                if let Some(ref client) = self.rig_client {
+                    let freq = client.state().frequency;
+                    if freq > 0.0 {
+                        self.new_contact.frequency = freq;
+                        if let Some(band) = crate::models::frequency_to_band(freq) {
+                            self.new_contact.band = band.to_string();
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                self.rig_status_message = Some(format!("Connection failed: {}", e));
+                self.status_message = format!("Rig connection failed: {}", e);
+            }
+        }
+    }
+
+    fn rig_disconnect(&mut self) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        if let Some(ref mut client) = self.rig_client {
+            let _ = rt.block_on(client.disconnect());
+        }
+        self.rig_client = None;
+        self.rig_status_message = Some("Disconnected".to_string());
+        self.status_message = "Disconnected from transceiver".to_string();
+    }
+
+    fn rig_update_state(&mut self) {
+        if let Some(ref mut client) = self.rig_client {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(client.update_state());
+            
+            let freq = client.state().frequency;
+            if freq > 0.0 && (self.new_contact.frequency - freq).abs() > 0.001 {
+                self.new_contact.frequency = freq;
+                if let Some(band) = crate::models::frequency_to_band(freq) {
+                    self.new_contact.band = band.to_string();
+                }
+            }
+            
+            let mode = &client.state().mode;
+            if !mode.is_empty() {
+                let mode_str = crate::rigctl::mode_to_string(mode);
+                if mode_str != "Unknown" {
+                    self.new_contact.mode = mode_str.to_string();
+                }
+            }
+        }
+    }
+
+    fn is_rig_connected(&self) -> bool {
+        self.rig_client.as_ref().map(|c| c.state().connected).unwrap_or(false)
+    }
 }
 
 impl eframe::App for QsoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.rig_update_state();
+        
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("QSOLink - Ham Radio Logger");
@@ -342,6 +422,21 @@ impl eframe::App for QsoApp {
                 ui.separator();
                 if ui.button("Database Settings").clicked() {
                     self.show_db_settings = !self.show_db_settings;
+                }
+                ui.separator();
+                if ui.button("Rig Settings").clicked() {
+                    self.show_rig_settings = !self.show_rig_settings;
+                }
+                ui.separator();
+                
+                let is_connected = self.is_rig_connected();
+                if is_connected {
+                    if let Some(ref client) = self.rig_client {
+                        let freq_display = client.format_frequency();
+                        ui.colored_label(egui::Color32::GREEN, format!("\u{25CF} {}", freq_display));
+                    }
+                } else {
+                    ui.colored_label(egui::Color32::RED, "\u{25CB} Disconnected");
                 }
             });
         });
@@ -563,6 +658,70 @@ impl eframe::App for QsoApp {
                             self.show_db_settings = false;
                             self.connection_test_result = None;
                             self.status_message = "Database settings unchanged".to_string();
+                        }
+                    });
+                });
+        }
+
+        if self.show_rig_settings {
+            egui::Window::new("Transceiver Settings")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Hamlib rigctld Connection");
+                    ui.label("(Requires rigctld running on localhost)");
+                    ui.separator();
+
+                    let is_connected = self.is_rig_connected();
+                    
+                    if is_connected {
+                        ui.colored_label(egui::Color32::GREEN, "\u{25CF} Connected");
+                        if let Some(ref client) = self.rig_client {
+                            ui.label(format!("Frequency: {}", client.format_frequency()));
+                            ui.label(format!("Mode: {}", client.state().mode));
+                        }
+                    } else {
+                        ui.colored_label(egui::Color32::RED, "\u{25CB} Disconnected");
+                    }
+
+                    if let Some(ref msg) = self.rig_status_message {
+                        ui.separator();
+                        ui.label(msg);
+                    }
+
+                    ui.separator();
+                    ui.label("Host:");
+                    ui.text_edit_singleline(&mut self.rig_config.host);
+
+                    ui.label("Port:");
+                    ui.add(egui::DragValue::new(&mut self.rig_config.port).range(1024..=65535));
+
+                    ui.label("Poll Interval (ms):");
+                    ui.add(egui::DragValue::new(&mut self.rig_config.poll_interval_ms).range(100..=5000));
+
+                    ui.label("Example rigctld command:");
+                    ui.label("rigctld -m 1024 -r /dev/ttyUSB0 -s 115200 -T localhost -t 4532");
+                    ui.label("(1024 = Icom IC-7300, adjust for your radio)");
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if !is_connected {
+                            if ui.button("Connect").clicked() {
+                                self.rig_connect();
+                            }
+                        } else {
+                            if ui.button("Disconnect").clicked() {
+                                self.rig_disconnect();
+                            }
+                        }
+                    });
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Close").clicked() {
+                            self.show_rig_settings = false;
+                            self.rig_status_message = None;
                         }
                     });
                 });
