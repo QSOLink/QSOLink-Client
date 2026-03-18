@@ -4,11 +4,12 @@ A cross-platform ham radio logging application written in Rust using egui.
 
 ## Features
 
-- Contact logging with callsign, name, QTH, band, mode, frequency, RST, notes
+- Contact logging with callsign, name, QTH, band, mode, frequency, RST, grid square, notes
 - Local SQLite database storage (default)
 - Remote database support (PostgreSQL, MySQL)
 - QRZ.com callsign lookup with encrypted credential storage
-- ADIF export
+- ARRL Logbook of the World (LoTW) integration — check confirmations, mark submitted/confirmed
+- ADIF export (LoTW-compatible with STATION_CALLSIGN, MY_GRIDSQUARE, SUBMODE)
 - Cabrillo export (contest format)
 - Search and filter contacts
 - Transceiver control via Hamlib rigctld (CAT/CIV)
@@ -98,6 +99,15 @@ The application automatically creates a `qso.db` file in the current directory.
    - MySQL: `mysql://user:password@localhost:3306/qsolog`
 4. Click "Test Connection" to verify
 5. Click "Connect" to switch to remote database
+
+## LoTW Setup
+
+1. Click "LoTW Settings" in the toolbar
+2. Enter your LoTW username and password (same as your ARRL account)
+3. Enter your station callsign and grid square
+4. Click "Save & Close"
+5. On app start and every 60 minutes, QSOLink automatically syncs with LoTW to check for confirmations
+6. To export contacts for LoTW signing: click "Export ADIF" and open the file in TrustedQSL (TQSL) to apply your digital signature and upload to LoTW
 
 ## QRZ.com Setup
 
@@ -194,11 +204,12 @@ QSOLink-client/
 │   ├── app.rs         # Main UI application
 │   ├── db.rs          # SQLite database operations
 │   ├── export.rs      # ADIF/Cabrillo export
-│   ├── models.rs      # Data models and validation
+│   ├── lotw.rs        # ARRL LoTW API client and ADIF parser
+│   ├── models.rs      # Data models, validation, ADIF mode info
 │   ├── qrz.rs         # QRZ.com API client
 │   ├── remote_db.rs   # Remote database support
 │   ├── rigctl.rs      # Hamlib rigctld client
-│   ├── security.rs    # Credential encryption
+│   ├── security.rs    # Credential encryption, station profile persistence
 │   └── main.rs        # Entry point
 ├── Cargo.toml         # Dependencies
 └── Cargo.lock         # Locked dependencies
@@ -221,11 +232,15 @@ MIT License - See LICENSE file
 - Auto-populate frequency and mode in contact form
 - Status indicator in header (green = connected, red = disconnected)
 
-### Logbook of the World (LoTW)
-- ARRL Logbook of the World integration
-- Upload QSOs to LoTW
-- Download confirmations from LoTW
-- TQSL credential management
+### Logbook of the World (LoTW) - IN PROGRESS
+- [x] ARRL LoTW integration (check confirmations via lotw.arrl.org)
+- [x] Mark contacts as lotw_submitted / lotw_confirmed
+- [x] Periodic sync on startup and hourly while running
+- [x] Station profile setup at first launch
+- [x] Mode dropdown with ADIF-enumerated values
+- [x] Maidenhead grid square validation
+- [x] ADIF export with STATION_CALLSIGN, MY_GRIDSQUARE, SUBMODE for LoTW
+- [ ] **TQSL direct integration** (sign and upload ADIF via TrustedQSL) — deferred to future release
 
 ### Additional Features
 - Contact editing (update existing contacts)

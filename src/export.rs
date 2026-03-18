@@ -1,4 +1,4 @@
-use crate::models::Contact;
+use crate::models::{get_mode_adif_fields, Contact};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -39,7 +39,7 @@ fn contact_to_adif(contact: &Contact) -> String {
     }
 
     if contact.frequency > 0.0 {
-        let freq_str = format!("{:.3}", contact.frequency);
+        let freq_str = format!("{:.5}", contact.frequency);
         parts.push(format!("<FREQ:{}>{}", freq_str.len(), freq_str));
     }
 
@@ -48,7 +48,11 @@ fn contact_to_adif(contact: &Contact) -> String {
     }
 
     if !contact.mode.is_empty() {
-        parts.push(format!("<MODE:{}>{}", contact.mode.len(), contact.mode));
+        let (adif_mode, adif_submode) = get_mode_adif_fields(&contact.mode);
+        parts.push(format!("<MODE:{}>{}", adif_mode.len(), adif_mode));
+        if let Some(submode) = adif_submode {
+            parts.push(format!("<SUBMODE:{}>{}", submode.len(), submode));
+        }
     }
 
     if !contact.rst_sent.is_empty() {
@@ -81,8 +85,8 @@ fn contact_to_adif(contact: &Contact) -> String {
     }
 
     if !contact.qso_time.is_empty() {
-        let time_clean = format!("{:0<4}", contact.qso_time.replace(":", ""));
-        parts.push(format!("<TIME_ON:4>{}", time_clean));
+        let time_clean = format!("{:0<6}", contact.qso_time.replace(":", ""));
+        parts.push(format!("<TIME_ON:6>{}", time_clean));
     }
 
     parts.join("\n")

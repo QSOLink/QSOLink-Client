@@ -1,8 +1,16 @@
 use crate::db::Database;
-use crate::models::{validate_callsign, Contact, BANDS, MODES};
+use crate::lotw::{self, LotwClient};
+use crate::models::{
+    validate_callsign, validate_grid_square, validate_qso_date, validate_qso_time,
+    mode_needs_warning, Contact, LotwStatus, StationProfile, BANDS,
+};
 use crate::remote_db::{DatabaseConfig, DatabaseType, RemoteDatabase};
 use crate::rigctl::{RigCtlClient, RigConfig};
+use crate::security::{CredentialStore, LotwSyncState};
+use chrono::{Local, Utc};
 use eframe::egui;
+
+const SYNC_INTERVAL_SECS: u64 = 3600;
 
 pub struct QsoApp {
     db: Database,
@@ -20,7 +28,7 @@ pub struct QsoApp {
     qrz_username_backup: String,
     qrz_password_backup: String,
     show_qrz_settings: bool,
-    credential_store: crate::security::CredentialStore,
+    credential_store: CredentialStore,
     show_db_settings: bool,
     db_config: DatabaseConfig,
     use_remote_db: bool,
@@ -33,6 +41,23 @@ pub struct QsoApp {
     current_theme: String,
     show_callsign_details: Option<Contact>,
     callsign_suggestions: Vec<Contact>,
+    show_lotw_settings: bool,
+    lotw_username: String,
+    lotw_password: String,
+    lotw_username_backup: String,
+    lotw_password_backup: String,
+    lotw_client: Option<LotwClient>,
+    station_profile: StationProfile,
+    station_profile_backup: StationProfile,
+    last_sync_time: Option<String>,
+    last_sync_instant: std::time::Instant,
+    sync_in_progress: bool,
+    sync_error: Option<String>,
+    lotw_submit_error: Option<String>,
+    lotw_submit_success: Option<String>,
+    frame_counter: u64,
+    mode_custom_text: String,
+    use_custom_mode: bool,
 }
 
 impl QsoApp {
@@ -43,28 +68,52 @@ impl QsoApp {
         let contacts = db.get_all_contacts().unwrap_or_default();
         let new_contact = Contact::new(String::new());
 
-        let credential_store = crate::security::CredentialStore::new();
+        let credential_store = CredentialStore::new();
         let (qrz_username, qrz_password) = credential_store
             .load_credentials()
             .unwrap_or((String::new(), String::new()));
 
+        let (lotw_username, lotw_password) = credential_store
+            .load_lotw_credentials()
+            .unwrap_or((String::new(), String::new()));
+
+        let station_profile = credential_store
+            .load_station_profile()
+            .unwrap_or_else(StationProfile::new);
+
+        let lotw_client = if !lotw_username.is_empty() && !lotw_password.is_empty() {
+            Some(LotwClient::new(lotw_username.clone(), lotw_password.clone()))
+        } else {
+            None
+        };
+
+        let sync_state = credential_store.load_lotw_sync_state();
+        let last_sync_time = sync_state.last_sync.clone();
+
+        let needs_lotw_setup = lotw_username.is_empty()
+            || lotw_password.is_empty()
+            || !station_profile.is_complete();
+
         log::info!(
-            "QSOLink started - QRZ credentials loaded: {}",
-            !qrz_username.is_empty()
+            "QSOLink started - QRZ: {}, LoTW: {}, Station: {}",
+            !qrz_username.is_empty(),
+            !lotw_username.is_empty(),
+            station_profile.is_complete()
         );
 
-        Self {
+        let mut app = Self {
             db,
             remote_db: None,
             contacts,
             search_query: String::new(),
             new_contact,
             selected_contact: None,
-            status_message: String::from("Ready - Click 'QRZ Settings' to configure lookup"),
+            status_message: String::from("Ready"),
             show_delete_confirm: false,
             contact_to_delete: None,
             qrz_client: None,
             qrz_username,
+            qrz_password,
             qrz_username_backup: String::new(),
             qrz_password_backup: String::new(),
             show_qrz_settings: false,
@@ -73,7 +122,6 @@ impl QsoApp {
             db_config: DatabaseConfig::default(),
             use_remote_db: false,
             connection_test_result: None,
-            qrz_password,
             show_rig_settings: false,
             rig_client: None,
             rig_config: RigConfig::default(),
@@ -82,7 +130,37 @@ impl QsoApp {
             current_theme: "Dark".to_string(),
             show_callsign_details: None,
             callsign_suggestions: Vec::new(),
+            show_lotw_settings: false,
+            lotw_username,
+            lotw_password,
+            lotw_username_backup: String::new(),
+            lotw_password_backup: String::new(),
+            lotw_client,
+            station_profile,
+            station_profile_backup: StationProfile::new(),
+            last_sync_time,
+            last_sync_instant: std::time::Instant::now(),
+            sync_in_progress: false,
+            sync_error: None,
+            lotw_submit_error: None,
+            lotw_submit_success: None,
+            frame_counter: 0,
+            mode_custom_text: String::new(),
+            use_custom_mode: false,
+        };
+
+        if needs_lotw_setup {
+            app.station_profile_backup = app.station_profile.clone();
+            app.lotw_username_backup = app.lotw_username.clone();
+            app.lotw_password_backup = app.lotw_password.clone();
+            app.show_lotw_settings = true;
         }
+
+        if app.lotw_client.is_some() {
+            app.do_lotw_sync();
+        }
+
+        app
     }
 
     fn add_contact(&mut self) {
@@ -96,6 +174,23 @@ impl QsoApp {
         if let Err(e) = validate_callsign(&callsign) {
             self.status_message = format!("Error: {}", e);
             return;
+        }
+
+        if let Err(e) = validate_qso_time(&self.new_contact.qso_time) {
+            self.status_message = format!("Error: {}", e);
+            return;
+        }
+
+        if let Err(e) = validate_qso_date(&self.new_contact.qso_date) {
+            self.status_message = format!("Error: {}", e);
+            return;
+        }
+
+        if !self.new_contact.grid_square.trim().is_empty() {
+            if let Err(e) = validate_grid_square(&self.new_contact.grid_square) {
+                self.status_message = format!("Error: {}", e);
+                return;
+            }
         }
 
         self.new_contact.call_sign = callsign;
@@ -299,13 +394,13 @@ impl QsoApp {
                 }
                 
                 if let Some(ref addr2) = qrz.addr2 {
-                    self.new_contact.city = Some(addr2.clone());
+                    self.new_contact.city = addr2.clone();
                 }
                 if let Some(ref state) = qrz.state {
-                    self.new_contact.state = Some(state.clone());
+                    self.new_contact.state = state.clone();
                 }
                 if let Some(ref grid) = qrz.grid {
-                    self.new_contact.grid_square = Some(grid.clone());
+                    self.new_contact.grid_square = grid.clone();
                 }
 
                 self.status_message = format!("Found: {} - {}", qrz.call, self.new_contact.name);
@@ -344,13 +439,13 @@ impl QsoApp {
                                 self.new_contact.qth = country.clone();
                             }
                             if let Some(ref addr2) = qrz.addr2 {
-                                self.new_contact.city = Some(addr2.clone());
+                                self.new_contact.city = addr2.clone();
                             }
                             if let Some(ref state) = qrz.state {
-                                self.new_contact.state = Some(state.clone());
+                                self.new_contact.state = state.clone();
                             }
                             if let Some(ref grid) = qrz.grid {
-                                self.new_contact.grid_square = Some(grid.clone());
+                                self.new_contact.grid_square = grid.clone();
                             }
                             self.status_message =
                                 format!("Found: {} - {}", qrz.call, self.new_contact.name);
@@ -435,6 +530,161 @@ impl QsoApp {
         self.rig_client.as_ref().map(|c| c.state().connected).unwrap_or(false)
     }
 
+    fn check_lotw_sync(&mut self, ctx: &egui::Context) {
+        if self.sync_in_progress {
+            return;
+        }
+        if self.lotw_client.is_none() {
+            return;
+        }
+
+        if self.last_sync_instant.elapsed().as_secs() >= SYNC_INTERVAL_SECS {
+            self.do_lotw_sync();
+            ctx.request_repaint();
+        }
+    }
+
+    fn do_lotw_sync(&mut self) {
+        if self.lotw_client.is_none() {
+            return;
+        }
+
+        self.sync_in_progress = true;
+        self.sync_error = None;
+        self.status_message = "Syncing with LoTW...".to_string();
+
+        let client = self.lotw_client.as_ref().unwrap();
+        let sync_state = self.credential_store.load_lotw_sync_state();
+
+        match client.fetch_confirmations(sync_state.last_qsl_timestamp.as_deref()) {
+            Ok(result) => {
+                if result.is_html_error {
+                    self.sync_error = Some("LoTW returned an error. Check your credentials.".to_string());
+                    self.status_message = "LoTW sync failed: HTML response".to_string();
+                } else {
+                    let mut confirmed_count = 0;
+                    for record in &result.records {
+                        if record.qsl_rcvd.to_uppercase() == "Y" {
+                            if let Err(e) = self.db.update_lotw_confirmed(
+                                &record.call,
+                                &record.qso_date,
+                                &record.time_on,
+                                &record.band,
+                                &record.mode,
+                            ) {
+                                log::warn!("Failed to update LoTW confirmed: {}", e);
+                            } else {
+                                confirmed_count += 1;
+                            }
+                        }
+                    }
+
+                    let now = Utc::now();
+                    let new_state = LotwSyncState {
+                        last_qsl_timestamp: result.last_qsl_timestamp.clone(),
+                        last_qsorx_timestamp: result.last_qsorx_timestamp.clone(),
+                        last_sync: Some(now.format("%Y-%m-%d %H:%M UTC").to_string()),
+                    };
+                    let _ = self.credential_store.save_lotw_sync_state(&new_state);
+
+                    self.last_sync_time = new_state.last_sync.clone();
+                    self.last_sync_instant = std::time::Instant::now();
+                    self.status_message = if confirmed_count > 0 {
+                        format!("LoTW sync: {} new confirmations", confirmed_count)
+                    } else {
+                        format!("LoTW sync complete: {} records checked", result.records.len())
+                    };
+                    self.refresh_contacts();
+                }
+            }
+            Err(e) => {
+                self.sync_error = Some(e.clone());
+                self.status_message = format!("LoTW sync failed: {}", e);
+            }
+        }
+
+        self.sync_in_progress = false;
+    }
+
+    fn submit_to_lotw(&mut self) {
+        if !self.station_profile.is_complete() {
+            self.lotw_submit_error = Some(
+                "Station callsign and grid square are required before submitting to LoTW.".to_string(),
+            );
+            self.lotw_submit_success = None;
+            return;
+        }
+
+        let unsubmitted = match self.db.get_unsubmitted_contacts() {
+            Ok(c) => c,
+            Err(e) => {
+                self.lotw_submit_error = Some(format!("Failed to query unsubmitted contacts: {}", e));
+                self.lotw_submit_success = None;
+                return;
+            }
+        };
+
+        if unsubmitted.is_empty() {
+            self.lotw_submit_error = Some("No unsubmitted contacts found.".to_string());
+            self.lotw_submit_success = None;
+            return;
+        }
+
+        let mut missing_required = Vec::new();
+        let mut missing_station = Vec::new();
+
+        for contact in &unsubmitted {
+            let missing = contact.can_submit_to_lotw();
+            if !missing.is_empty() {
+                missing_required.push(format!("{}: {}", contact.call_sign, missing.join(", ")));
+            }
+            let station_missing = contact.missing_lotw_station_fields();
+            if !station_missing.is_empty() {
+                missing_station.push(format!("{}: {}", contact.call_sign, station_missing.join(", ")));
+            }
+        }
+
+        let mut errors = Vec::new();
+        if !missing_required.is_empty() {
+            errors.push(format!("Missing required fields:\n{}", missing_required.join("\n")));
+        }
+        if !missing_station.is_empty() {
+            errors.push(format!("Missing station fields:\n{}", missing_station.join("\n")));
+        }
+
+        if !errors.is_empty() {
+            self.lotw_submit_error = Some(errors.join("\n\n"));
+            self.lotw_submit_success = None;
+            return;
+        }
+
+        let filename = lotw::generate_lotw_filename();
+        let path = std::path::PathBuf::from(&filename);
+
+        match lotw::export_for_lotw(&unsubmitted, &self.station_profile, &path) {
+            Ok(count) => {
+                let ids: Vec<i64> = unsubmitted.iter().filter_map(|c| c.id).collect();
+                let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+                if let Err(e) = self.db.mark_submitted(&ids, &now) {
+                    log::warn!("Failed to mark contacts as submitted: {}", e);
+                }
+
+                let _ = open_file(&path);
+
+                self.lotw_submit_success = Some(format!(
+                    "Exported {} contacts to {} — marked as submitted",
+                    count, filename
+                ));
+                self.lotw_submit_error = None;
+                self.refresh_contacts();
+            }
+            Err(e) => {
+                self.lotw_submit_error = Some(format!("Export failed: {}", e));
+                self.lotw_submit_success = None;
+            }
+        }
+    }
+
     fn apply_theme(&self, ctx: &egui::Context) {
         let visuals = match self.current_theme.as_str() {
             "Dark" => egui::Visuals::dark(),
@@ -493,9 +743,50 @@ impl QsoApp {
     }
 }
 
+fn open_file(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).spawn().ok();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", path.to_str().unwrap_or("")])
+            .spawn()
+            .ok();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .ok();
+    }
+}
+
+fn format_utc_time(dt: &chrono::DateTime<chrono::Utc>) -> String {
+    dt.format("%H:%M:%S").to_string()
+}
+
+fn format_local_time(dt: &chrono::DateTime<chrono::Local>) -> String {
+    dt.format("%H:%M:%S").to_string()
+}
+
 impl eframe::App for QsoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.frame_counter += 1;
         self.rig_update_state();
+        self.check_lotw_sync(ctx);
+        
+        let utc_now = Utc::now();
+        let local_now = Local::now();
+        
+        if self.frame_counter % 60 == 0 || self.frame_counter == 1 {
+            if self.new_contact.qso_date.is_empty() || self.new_contact.qso_time.is_empty() {
+                self.new_contact.qso_date = utc_now.format("%Y-%m-%d").to_string();
+                self.new_contact.qso_time = local_now.format("%H%M%S").to_string();
+            }
+        }
         
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -513,6 +804,11 @@ impl eframe::App for QsoApp {
                     ui.colored_label(egui::Color32::RED, "\u{25CB} Disconnected");
                 }
                 
+                ui.separator();
+                
+                ui.colored_label(egui::Color32::GREEN, format!("UTC {}", format_utc_time(&utc_now)));
+                ui.label(format!("(Local: {})", format_local_time(&local_now)));
+                
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     egui::ComboBox::from_id_salt("hamburger_menu")
                         .selected_text("\u{2630}")
@@ -524,6 +820,12 @@ impl eframe::App for QsoApp {
                                 self.export_cabrillo();
                             }
                             ui.separator();
+                            if ui.button("LoTW Settings").clicked() {
+                                self.station_profile_backup = self.station_profile.clone();
+                                self.lotw_username_backup = self.lotw_username.clone();
+                                self.lotw_password_backup = self.lotw_password.clone();
+                                self.show_lotw_settings = true;
+                            }
                             if ui.button("QRZ Settings").clicked() {
                                 self.qrz_username_backup = self.qrz_username.clone();
                                 self.qrz_password_backup = self.qrz_password.clone();
@@ -869,8 +1171,134 @@ impl eframe::App for QsoApp {
                 });
         }
 
+        if self.show_lotw_settings {
+            egui::Window::new("LoTW Settings")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.heading("LoTW Settings");
+                    ui.separator();
+
+                    ui.group(|ui| {
+                        ui.label("LoTW Account");
+                        ui.label("(Same credentials as lotw.arrl.org)");
+                        ui.horizontal(|ui| {
+                            ui.label("Username:");
+                            ui.text_edit_singleline(&mut self.lotw_username);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Password:");
+                            ui.add(egui::TextEdit::singleline(&mut self.lotw_password).password(true));
+                        });
+                    });
+
+                    ui.separator();
+
+                    ui.group(|ui| {
+                        ui.label("My Station (Required for LoTW)");
+                        ui.horizontal(|ui| {
+                            ui.label("My Callsign:");
+                            ui.text_edit_singleline(&mut self.station_profile.callsign);
+                            ui.label(" *");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("My Grid Square:");
+                            ui.text_edit_singleline(&mut self.station_profile.grid_square);
+                            ui.label(" * (e.g. EM75, EM75AX)");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("CQ Zone:");
+                            ui.add(egui::DragValue::new(&mut self.station_profile.cq_zone).range(1..=40));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("ITU Zone:");
+                            ui.add(egui::DragValue::new(&mut self.station_profile.itu_zone).range(1..=90));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("ARRL Section:");
+                            ui.text_edit_singleline(&mut self.station_profile.arl_section);
+                        });
+                    });
+
+                    ui.separator();
+
+                    ui.group(|ui| {
+                        ui.label("Sync");
+                        if let Some(ref last) = self.last_sync_time {
+                            ui.label(format!("Last sync: {}", last));
+                        } else {
+                            ui.label("Never synced");
+                        }
+                        if self.sync_in_progress {
+                            ui.colored_label(egui::Color32::YELLOW, "Syncing...");
+                        }
+                        if let Some(ref err) = self.sync_error {
+                            ui.colored_label(egui::Color32::RED, format!("Error: {}", err));
+                        }
+                        if ui.button("Sync Now").clicked() {
+                            if self.lotw_client.is_none() && !self.lotw_username.is_empty() && !self.lotw_password.is_empty() {
+                                self.lotw_client = Some(LotwClient::new(self.lotw_username.clone(), self.lotw_password.clone()));
+                            }
+                            self.do_lotw_sync();
+                        }
+                    });
+
+                    ui.separator();
+
+                    ui.group(|ui| {
+                        ui.label("Submission");
+                        let unsubmitted_count = self.db.get_unsubmitted_contacts().map(|c| c.len()).unwrap_or(0);
+                        ui.label(format!("Unsubmitted contacts: {}", unsubmitted_count));
+                        if let Some(ref err) = self.lotw_submit_error {
+                            ui.colored_label(egui::Color32::RED, err.clone());
+                        }
+                        if let Some(ref msg) = self.lotw_submit_success {
+                            ui.colored_label(egui::Color32::GREEN, msg.clone());
+                        }
+                        if ui.button("Submit to LoTW").clicked() {
+                            self.submit_to_lotw();
+                        }
+                        ui.label("(Generates ADIF file for signing with TQSL)");
+                    });
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Save & Close").clicked() {
+                            if let Err(e) = self.credential_store.save_station_profile(&self.station_profile) {
+                                log::error!("Failed to save station profile: {}", e);
+                            }
+
+                            if !self.lotw_username.is_empty() && !self.lotw_password.is_empty() {
+                                if self.lotw_username != self.lotw_username_backup || self.lotw_password != self.lotw_password_backup {
+                                    if let Err(e) = self.credential_store.save_lotw_credentials(&self.lotw_username, &self.lotw_password) {
+                                        log::error!("Failed to save LoTW credentials: {}", e);
+                                    }
+                                    self.lotw_client = Some(LotwClient::new(self.lotw_username.clone(), self.lotw_password.clone()));
+                                }
+                            } else {
+                                let _ = self.credential_store.delete_lotw_credentials();
+                                self.lotw_client = None;
+                            }
+
+                            self.show_lotw_settings = false;
+                            self.status_message = "LoTW settings saved".to_string();
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.station_profile = self.station_profile_backup.clone();
+                            self.lotw_username = self.lotw_username_backup.clone();
+                            self.lotw_password = self.lotw_password_backup.clone();
+                            self.show_lotw_settings = false;
+                            self.lotw_submit_error = None;
+                            self.lotw_submit_success = None;
+                            self.status_message = "LoTW settings unchanged".to_string();
+                        }
+                    });
+                });
+        }
+
         egui::SidePanel::left("input_panel")
-            .min_width(350.0)
+            .min_width(400.0)
             .show(ctx, |ui| {
                 ui.heading("New Contact");
                 ui.separator();
@@ -890,7 +1318,7 @@ impl eframe::App for QsoApp {
                             self.callsign_suggestions.clear();
                         }
                     }
-                    if ui.button("QRZ Lookup").clicked() {
+                    if ui.button("QRZ").clicked() {
                         self.do_lookup();
                     }
                 });
@@ -907,15 +1335,9 @@ impl eframe::App for QsoApp {
                             self.new_contact.band = suggestion.band.clone();
                             self.new_contact.mode = suggestion.mode.clone();
                             self.new_contact.frequency = suggestion.frequency;
-                            if let Some(ref city) = suggestion.city {
-                                self.new_contact.city = Some(city.clone());
-                            }
-                            if let Some(ref state) = suggestion.state {
-                                self.new_contact.state = Some(state.clone());
-                            }
-                            if let Some(ref grid) = suggestion.grid_square {
-                                self.new_contact.grid_square = Some(grid.clone());
-                            }
+                            self.new_contact.city = suggestion.city.clone();
+                            self.new_contact.state = suggestion.state.clone();
+                            self.new_contact.grid_square = suggestion.grid_square.clone();
                             self.callsign_suggestions.clear();
                         }
                     }
@@ -948,20 +1370,49 @@ impl eframe::App for QsoApp {
                             });
                     });
                     ui.vertical(|ui| {
-                        ui.label("Mode");
+                        ui.label("Mode *");
+                        let needs_warn = mode_needs_warning(&self.new_contact.mode);
+                        
                         egui::ComboBox::from_id_salt("mode_combo")
                             .selected_text(&self.new_contact.mode)
                             .show_ui(ui, |ui| {
-                                for mode in MODES {
-                                    ui.selectable_value(
-                                        &mut self.new_contact.mode,
-                                        mode.to_string(),
-                                        *mode,
-                                    );
+                                let common_modes = ["CW", "SSB", "USB", "LSB", "FM", "AM", "RTTY", "DATA"];
+                                for m in &common_modes {
+                                    ui.selectable_value(&mut self.new_contact.mode, (*m).to_string(), *m);
+                                }
+                                ui.separator();
+                                ui.label("Digital Modes:");
+                                let digital_modes = ["FT8", "FT4", "PSK31", "PSK63", "JS8", "MFSK", "OLIVIA"];
+                                for m in &digital_modes {
+                                    ui.selectable_value(&mut self.new_contact.mode, (*m).to_string(), *m);
+                                }
+                                ui.separator();
+                                if ui.selectable_label(self.use_custom_mode, "Other...").clicked() {
+                                    self.use_custom_mode = true;
+                                    self.mode_custom_text = self.new_contact.mode.clone();
                                 }
                             });
+                        
+                        if needs_warn {
+                            ui.colored_label(egui::Color32::YELLOW, "FT8/FT4 are digital submodes");
+                        }
                     });
                 });
+
+                if self.use_custom_mode {
+                    ui.horizontal(|ui| {
+                        ui.label("Custom Mode:");
+                        ui.text_edit_singleline(&mut self.mode_custom_text);
+                        if ui.button("Use").clicked() {
+                            self.new_contact.mode = self.mode_custom_text.clone();
+                            self.use_custom_mode = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.use_custom_mode = false;
+                            self.mode_custom_text.clear();
+                        }
+                    });
+                }
 
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
@@ -980,12 +1431,44 @@ impl eframe::App for QsoApp {
 
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label("Date (YYYY-MM-DD)");
+                        ui.label("Date (YYYY-MM-DD) *");
                         ui.text_edit_singleline(&mut self.new_contact.qso_date);
                     });
                     ui.vertical(|ui| {
-                        ui.label("Time (HHMM)");
+                        ui.label("Time (UTC, HHMMSS) *");
                         ui.text_edit_singleline(&mut self.new_contact.qso_time);
+                    });
+                });
+
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label("Grid Square");
+                        ui.text_edit_singleline(&mut self.new_contact.grid_square);
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("CQ Zone");
+                        ui.add(egui::DragValue::new(&mut self.new_contact.cq_zone).range(1..=40));
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("ITU Zone");
+                        ui.add(egui::DragValue::new(&mut self.new_contact.itu_zone).range(1..=90));
+                    });
+                });
+
+                if !self.new_contact.grid_square.trim().is_empty() {
+                    if validate_grid_square(&self.new_contact.grid_square).is_err() {
+                        ui.colored_label(egui::Color32::RED, "Invalid grid square format");
+                    }
+                }
+
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label("City");
+                        ui.text_edit_singleline(&mut self.new_contact.city);
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("State");
+                        ui.text_edit_singleline(&mut self.new_contact.state);
                     });
                 });
 
@@ -993,6 +1476,17 @@ impl eframe::App for QsoApp {
                 ui.text_edit_multiline(&mut self.new_contact.notes);
 
                 ui.separator();
+
+                let missing = self.new_contact.can_submit_to_lotw();
+                if missing.is_empty() {
+                    ui.colored_label(egui::Color32::GREEN, "✓ Ready for LoTW");
+                } else {
+                    ui.colored_label(
+                        egui::Color32::RED,
+                        format!("✗ Missing for LoTW: {}", missing.join(", ")),
+                    );
+                }
+
                 if ui.button("Add Contact").clicked() {
                     self.add_contact();
                 }
@@ -1016,7 +1510,7 @@ impl eframe::App for QsoApp {
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 egui::Grid::new("contacts_grid")
-                    .num_columns(8)
+                    .num_columns(9)
                     .spacing([10.0, 5.0])
                     .striped(true)
                     .show(ui, |ui| {
@@ -1028,6 +1522,7 @@ impl eframe::App for QsoApp {
                         ui.label("Mode");
                         ui.label("RST");
                         ui.label("QSOs");
+                        ui.label("LoTW");
                         ui.end_row();
 
                         for contact in &self.contacts {
@@ -1048,6 +1543,18 @@ impl eframe::App for QsoApp {
                             } else {
                                 ui.label("");
                             }
+
+                            match contact.lotw_status() {
+                                LotwStatus::Confirmed => {
+                                    ui.colored_label(egui::Color32::GREEN, "✓");
+                                }
+                                LotwStatus::Submitted => {
+                                    ui.colored_label(egui::Color32::YELLOW, "✓");
+                                }
+                                LotwStatus::NotSubmitted => {
+                                    ui.label("-");
+                                }
+                            }
                             ui.end_row();
                         }
                     });
@@ -1065,25 +1572,17 @@ impl eframe::App for QsoApp {
                     ui.separator();
                     ui.label(format!("Name: {}", contact.name));
                     ui.label(format!("QTH: {}", contact.qth));
-                    if let Some(ref city) = contact.city {
-                        if !city.is_empty() {
-                            ui.label(format!("City: {}", city));
-                        }
+                    if !contact.city.is_empty() {
+                        ui.label(format!("City: {}", contact.city));
                     }
-                    if let Some(ref state) = contact.state {
-                        if !state.is_empty() {
-                            ui.label(format!("State: {}", state));
-                        }
+                    if !contact.state.is_empty() {
+                        ui.label(format!("State: {}", contact.state));
                     }
-                    if let Some(ref county) = contact.county {
-                        if !county.is_empty() {
-                            ui.label(format!("County: {}", county));
-                        }
+                    if !contact.county.is_empty() {
+                        ui.label(format!("County: {}", contact.county));
                     }
-                    if let Some(ref grid) = contact.grid_square {
-                        if !grid.is_empty() {
-                            ui.label(format!("Grid: {}", grid));
-                        }
+                    if !contact.grid_square.is_empty() {
+                        ui.label(format!("Grid: {}", contact.grid_square));
                     }
                     ui.label(format!("Band: {}", contact.band));
                     ui.label(format!("Mode: {}", contact.mode));
@@ -1093,7 +1592,26 @@ impl eframe::App for QsoApp {
                     ui.label(format!("Date: {}", contact.qso_date));
                     ui.label(format!("Time: {}", contact.qso_time));
                     ui.label(format!("Total QSOs with {}: {}", contact.call_sign, contact.qso_count));
+                    
+                    ui.separator();
+                    ui.label("LoTW Status:");
+                    match contact.lotw_status() {
+                        LotwStatus::Confirmed => {
+                            ui.colored_label(egui::Color32::GREEN, "Confirmed");
+                        }
+                        LotwStatus::Submitted => {
+                            ui.colored_label(egui::Color32::YELLOW, "Submitted (pending confirmation)");
+                        }
+                        LotwStatus::NotSubmitted => {
+                            ui.colored_label(egui::Color32::GRAY, "Not submitted");
+                        }
+                    }
+                    if let Some(ref date) = contact.lotw_submitted_date {
+                        ui.label(format!("Submitted: {}", date));
+                    }
+                    
                     if !contact.notes.is_empty() {
+                        ui.separator();
                         ui.label(format!("Notes: {}", contact.notes));
                     }
                     

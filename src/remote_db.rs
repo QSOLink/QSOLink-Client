@@ -162,10 +162,16 @@ impl RemoteDatabase {
             qso_time: row.try_get::<&str, _>(11).unwrap_or_default().to_string(),
             created_at: row.try_get::<&str, _>(12).ok().map(|s| s.to_string()),
             qso_count: row.try_get::<i32, _>(13).unwrap_or(1),
-            city: row.try_get::<&str, _>(14).ok().map(|s| s.to_string()),
-            state: row.try_get::<&str, _>(15).ok().map(|s| s.to_string()),
-            county: row.try_get::<&str, _>(16).ok().map(|s| s.to_string()),
-            grid_square: row.try_get::<&str, _>(17).ok().map(|s| s.to_string()),
+            city: row.try_get::<&str, _>(14).ok().map(|s| s.to_string()).unwrap_or_default(),
+            state: row.try_get::<&str, _>(15).ok().map(|s| s.to_string()).unwrap_or_default(),
+            county: row.try_get::<&str, _>(16).ok().map(|s| s.to_string()).unwrap_or_default(),
+            grid_square: row.try_get::<&str, _>(17).ok().map(|s| s.to_string()).unwrap_or_default(),
+            cq_zone: row.try_get::<i32, _>(18).unwrap_or(0),
+            itu_zone: row.try_get::<i32, _>(19).unwrap_or(0),
+            lotw_submitted: row.try_get::<i32, _>(20).unwrap_or(0) != 0,
+            lotw_confirmed: row.try_get::<i32, _>(21).unwrap_or(0) != 0,
+            lotw_submitted_date: row.try_get::<&str, _>(22).ok().map(|s| s.to_string()),
+            submode: String::new(),
         }
     }
 
