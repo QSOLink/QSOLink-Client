@@ -139,7 +139,7 @@ impl RemoteDatabase {
         };
 
         sqlx::query(create_table_sql)
-            .execute(&**&pool)
+            .execute(&*pool)
             .await
             .map_err(|e| format!("Failed to create table: {}", e))?;
 
@@ -148,7 +148,7 @@ impl RemoteDatabase {
 
     fn row_to_contact(row: &sqlx::any::AnyRow) -> Contact {
         Contact {
-            id: row.try_get::<i64, _>(0).ok().map(|id| id as i64),
+            id: row.try_get::<i64, _>(0).ok(),
             call_sign: row.try_get::<&str, _>(1).unwrap_or_default().to_string(),
             name: row.try_get::<&str, _>(2).unwrap_or_default().to_string(),
             qth: row.try_get::<&str, _>(3).unwrap_or_default().to_string(),
@@ -194,7 +194,7 @@ impl RemoteDatabase {
         .bind(&contact.notes)
         .bind(&contact.qso_date)
         .bind(&contact.qso_time)
-        .execute(&**&pool)
+        .execute(&*pool)
         .await
         .map_err(|e| format!("Insert failed: {}", e))?;
 
@@ -209,11 +209,11 @@ impl RemoteDatabase {
             "SELECT id, call_sign, name, qth, frequency, band, mode, rst_sent, rst_recv, notes, qso_date, qso_time, created_at
              FROM contacts ORDER BY id DESC"
         )
-        .fetch_all(&**&pool)
+        .fetch_all(&*pool)
         .await
         .map_err(|e| format!("Query failed: {}", e))?;
 
-        let contacts: Vec<Contact> = rows.iter().map(|row| Self::row_to_contact(row)).collect();
+        let contacts: Vec<Contact> = rows.iter().map(Self::row_to_contact).collect();
 
         Ok(contacts)
     }
@@ -229,11 +229,11 @@ impl RemoteDatabase {
              FROM contacts WHERE call_sign LIKE $1 OR name LIKE $1 OR qth LIKE $1 ORDER BY id DESC"
         )
         .bind(&search_pattern)
-        .fetch_all(&**&pool)
+        .fetch_all(&*pool)
         .await
         .map_err(|e| format!("Query failed: {}", e))?;
 
-        let contacts: Vec<Contact> = rows.iter().map(|row| Self::row_to_contact(row)).collect();
+        let contacts: Vec<Contact> = rows.iter().map(Self::row_to_contact).collect();
 
         Ok(contacts)
     }
@@ -244,7 +244,7 @@ impl RemoteDatabase {
 
         sqlx::query("DELETE FROM contacts WHERE id = $1")
             .bind(id)
-            .execute(&**&pool)
+            .execute(&*pool)
             .await
             .map_err(|e| format!("Delete failed: {}", e))?;
 
@@ -272,7 +272,7 @@ impl RemoteDatabase {
         .bind(&contact.qso_date)
         .bind(&contact.qso_time)
         .bind(id)
-        .execute(&**&pool)
+        .execute(&*pool)
         .await
         .map_err(|e| format!("Update failed: {}", e))?;
 

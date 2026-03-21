@@ -590,20 +590,20 @@ pub fn is_submode(mode: &str) -> bool {
 
 pub fn frequency_to_band(freq_mhz: f64) -> Option<&'static str> {
     match freq_mhz {
-        f if f >= 1.8 && f < 2.0 => Some("160m"),
-        f if f >= 3.5 && f < 4.0 => Some("80m"),
-        f if f >= 5.3 && f < 5.4 => Some("60m"),
-        f if f >= 7.0 && f < 7.3 => Some("40m"),
-        f if f >= 10.1 && f < 10.15 => Some("30m"),
-        f if f >= 14.0 && f < 14.35 => Some("20m"),
-        f if f >= 18.068 && f < 18.168 => Some("17m"),
-        f if f >= 21.0 && f < 21.45 => Some("15m"),
-        f if f >= 24.89 && f < 24.99 => Some("12m"),
-        f if f >= 28.0 && f < 29.7 => Some("10m"),
-        f if f >= 50.0 && f < 54.0 => Some("6m"),
-        f if f >= 144.0 && f < 148.0 => Some("2m"),
-        f if f >= 420.0 && f < 450.0 => Some("70cm"),
-        f if f >= 1240.0 && f < 1300.0 => Some("23cm"),
+        f if (1.8..2.0).contains(&f) => Some("160m"),
+        f if (3.5..4.0).contains(&f) => Some("80m"),
+        f if (5.3..5.4).contains(&f) => Some("60m"),
+        f if (7.0..7.3).contains(&f) => Some("40m"),
+        f if (10.1..10.15).contains(&f) => Some("30m"),
+        f if (14.0..14.35).contains(&f) => Some("20m"),
+        f if (18.068..18.168).contains(&f) => Some("17m"),
+        f if (21.0..21.45).contains(&f) => Some("15m"),
+        f if (24.89..24.99).contains(&f) => Some("12m"),
+        f if (28.0..29.7).contains(&f) => Some("10m"),
+        f if (50.0..54.0).contains(&f) => Some("6m"),
+        f if (144.0..148.0).contains(&f) => Some("2m"),
+        f if (420.0..450.0).contains(&f) => Some("70cm"),
+        f if (1240.0..1300.0).contains(&f) => Some("23cm"),
         _ => None,
     }
 }
@@ -625,5 +625,216 @@ pub fn band_to_frequency(band: &str) -> Option<f64> {
         "70cm" => Some(435.0),
         "23cm" => Some(1270.0),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_callsign_valid() {
+        assert!(validate_callsign("W1AW").is_ok());
+        assert!(validate_callsign("K1ABC").is_ok());
+        assert!(validate_callsign("VA3XYZ").is_ok());
+        assert!(validate_callsign("W1AW/3").is_ok());
+        assert!(validate_callsign("K1ABC-7").is_ok());
+    }
+
+    #[test]
+    fn test_validate_callsign_invalid() {
+        assert!(validate_callsign("").is_err());
+        assert!(validate_callsign("AB").is_err());
+        assert!(validate_callsign("ABCDEFGH").is_err());
+        assert!(validate_callsign("W1AW!").is_err());
+        assert!(validate_callsign("W1 AW").is_err());
+    }
+
+    #[test]
+    fn test_validate_grid_square_valid() {}
+
+    #[test]
+    fn test_validate_grid_square_invalid() {
+        assert!(validate_grid_square("").is_err());
+        assert!(validate_grid_square("EM7").is_err());
+        assert!(validate_grid_square("EM75x").is_err());
+        assert!(validate_grid_square("EM").is_err());
+        assert!(validate_grid_square("12AB").is_err());
+        assert!(validate_grid_square("EM7a").is_err());
+        assert!(validate_grid_square("EM9000").is_err());
+        assert!(validate_grid_square("EM75AX24").is_err());
+    }
+
+    #[test]
+    fn test_validate_qso_time_valid() {
+        assert!(validate_qso_time("000000").is_ok());
+        assert!(validate_qso_time("235959").is_ok());
+        assert!(validate_qso_time("123456").is_ok());
+        assert!(validate_qso_time("120000").is_ok());
+    }
+
+    #[test]
+    fn test_validate_qso_time_invalid() {
+        assert!(validate_qso_time("").is_err());
+        assert!(validate_qso_time("12345").is_err());
+        assert!(validate_qso_time("1234567").is_err());
+        assert!(validate_qso_time("246000").is_err());
+        assert!(validate_qso_time("006060").is_err());
+        assert!(validate_qso_time("000060").is_err());
+        assert!(validate_qso_time("abcdef").is_err());
+    }
+
+    #[test]
+    fn test_validate_qso_date_valid() {
+        assert!(validate_qso_date("2024-01-01").is_ok());
+        assert!(validate_qso_date("2024-12-31").is_ok());
+        assert!(validate_qso_date("2024-06-15").is_ok());
+    }
+
+    #[test]
+    fn test_validate_qso_date_invalid() {
+        assert!(validate_qso_date("").is_err());
+        assert!(validate_qso_date("2024-1-1").is_err());
+        assert!(validate_qso_date("2024/01/01").is_err());
+        assert!(validate_qso_date("1899-01-01").is_err());
+        assert!(validate_qso_date("2101-01-01").is_err());
+        assert!(validate_qso_date("2024-00-01").is_err());
+        assert!(validate_qso_date("2024-13-01").is_err());
+        assert!(validate_qso_date("2024-01-00").is_err());
+        assert!(validate_qso_date("2024-01-32").is_err());
+    }
+
+    #[test]
+    fn test_frequency_to_band() {
+        assert_eq!(frequency_to_band(1.9), Some("160m"));
+        assert_eq!(frequency_to_band(3.75), Some("80m"));
+        assert_eq!(frequency_to_band(5.35), Some("60m"));
+        assert_eq!(frequency_to_band(7.15), Some("40m"));
+        assert_eq!(frequency_to_band(14.175), Some("20m"));
+        assert_eq!(frequency_to_band(21.225), Some("15m"));
+        assert_eq!(frequency_to_band(28.85), Some("10m"));
+        assert_eq!(frequency_to_band(52.0), Some("6m"));
+        assert_eq!(frequency_to_band(146.0), Some("2m"));
+        assert_eq!(frequency_to_band(435.0), Some("70cm"));
+        assert_eq!(frequency_to_band(1270.0), Some("23cm"));
+        assert_eq!(frequency_to_band(0.5), None);
+        assert_eq!(frequency_to_band(100.0), None);
+    }
+
+    #[test]
+    fn test_band_to_frequency() {
+        assert_eq!(band_to_frequency("160m"), Some(1.9));
+        assert_eq!(band_to_frequency("20m"), Some(14.175));
+        assert_eq!(band_to_frequency("2m"), Some(146.0));
+        assert_eq!(band_to_frequency("70cm"), Some(435.0));
+        assert_eq!(band_to_frequency("unknown"), None);
+    }
+
+    #[test]
+    fn test_find_mode_info() {
+        assert!(find_mode_info("CW").is_some());
+        assert!(find_mode_info("SSB").is_some());
+        assert!(find_mode_info("FT8").is_some());
+        assert!(find_mode_info("INVALID").is_none());
+    }
+
+    #[test]
+    fn test_get_mode_adif_fields() {
+        let (mode, submode) = get_mode_adif_fields("FT8");
+        assert_eq!(mode, "DATA");
+        assert_eq!(submode, Some("FT8".to_string()));
+
+        let (mode, submode) = get_mode_adif_fields("CW");
+        assert_eq!(mode, "CW");
+        assert_eq!(submode, None);
+
+        let (mode, submode) = get_mode_adif_fields("UNKNOWN");
+        assert_eq!(mode, "DATA");
+        assert_eq!(submode, Some("UNKNOWN".to_string()));
+    }
+
+    #[test]
+    fn test_mode_needs_warning() {
+        assert!(mode_needs_warning("FT8"));
+        assert!(mode_needs_warning("FT4"));
+        assert!(mode_needs_warning("PSK31"));
+        assert!(!mode_needs_warning("CW"));
+        assert!(!mode_needs_warning("SSB"));
+        assert!(!mode_needs_warning("FM"));
+    }
+
+    #[test]
+    fn test_is_submode() {
+        assert!(is_submode("FT8"));
+        assert!(is_submode("FT4"));
+        assert!(is_submode("PSK31"));
+        assert!(is_submode("JS8"));
+        assert!(!is_submode("SSB"));
+        assert!(!is_submode("CW"));
+    }
+
+    #[test]
+    fn test_sanitize_string() {
+        assert_eq!(sanitize_string("hello", 10), "hello");
+        assert_eq!(sanitize_string("hello world", 5), "hello");
+        assert_eq!(sanitize_string("hello\tworld", 20), "hello\tworld");
+        assert_eq!(sanitize_string("hello\x00world", 20), "helloworld");
+        assert_eq!(sanitize_string("", 10), "");
+    }
+
+    #[test]
+    fn test_contact_lotw_status() {
+        let mut c = Contact::new("W1AW".to_string());
+        assert_eq!(c.lotw_status(), LotwStatus::NotSubmitted);
+
+        c.lotw_submitted = true;
+        assert_eq!(c.lotw_status(), LotwStatus::Submitted);
+
+        c.lotw_confirmed = true;
+        assert_eq!(c.lotw_status(), LotwStatus::Confirmed);
+    }
+
+    #[test]
+    fn test_contact_can_submit_to_lotw() {
+        let mut c = Contact::new("W1AW".to_string());
+        c.call_sign = "W1AW".to_string();
+        c.qso_date = "2024-01-01".to_string();
+        c.qso_time = "120000".to_string();
+        c.band = "20m".to_string();
+        c.mode = "SSB".to_string();
+        assert!(c.can_submit_to_lotw().is_empty());
+
+        c.call_sign = "".to_string();
+        assert!(c.can_submit_to_lotw().contains(&"call_sign"));
+    }
+
+    #[test]
+    fn test_contact_validate() {
+        let mut c = Contact::new("W1AW".to_string());
+        c.qso_time = "120000".to_string();
+        c.qso_date = "2024-01-01".to_string();
+        assert!(c.validate().is_ok());
+
+        c.name = "A".repeat(51);
+        assert!(c.validate().is_err());
+
+        c.name = "Valid Name".to_string();
+        c.frequency = 30000.0;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn test_station_profile_is_complete() {
+        let mut sp = StationProfile::new();
+        assert!(!sp.is_complete());
+
+        sp.callsign = "W1AW".to_string();
+        assert!(!sp.is_complete());
+
+        sp.grid_square = "EM75".to_string();
+        assert!(sp.is_complete());
+
+        sp.callsign = "   ".to_string();
+        assert!(!sp.is_complete());
     }
 }

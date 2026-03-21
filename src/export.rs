@@ -242,3 +242,150 @@ pub fn generate_cabrillo_filename() -> String {
     let now = chrono::Local::now();
     format!("qso_export_{}.log", now.format("%Y%m%d_%H%M"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Contact;
+
+    fn create_test_contact() -> Contact {
+        let mut c = Contact::new("W1AW".to_string());
+        c.name = "Test Operator".to_string();
+        c.qth = "Newington".to_string();
+        c.frequency = 14.175;
+        c.band = "20m".to_string();
+        c.mode = "SSB".to_string();
+        c.rst_sent = "59".to_string();
+        c.rst_recv = "59".to_string();
+        c.notes = "Test QSO".to_string();
+        c.qso_date = "2024-01-15".to_string();
+        c.qso_time = "120000".to_string();
+        c
+    }
+
+    #[test]
+    fn test_contact_to_adif_basic() {
+        let contact = create_test_contact();
+        let adif = contact_to_adif(&contact);
+
+        assert!(adif.contains("<CALL:4>W1AW"));
+        assert!(adif.contains("<NAME:"));
+        assert!(adif.contains("Test Operator"));
+        assert!(adif.contains("<QTH:9>Newington"));
+        assert!(adif.contains("<BAND:3>20m"));
+        assert!(adif.contains("<MODE:"));
+        assert!(adif.contains("<RST_SENT:2>59"));
+        assert!(adif.contains("<QSO_DATE:8>20240115"));
+        assert!(adif.contains("<TIME_ON:6>120000"));
+    }
+
+    #[test]
+    fn test_contact_to_adif_empty_fields() {
+        let c = Contact::new("W1AW".to_string());
+        let adif = contact_to_adif(&c);
+        assert!(adif.contains("<CALL:4>W1AW"));
+        assert!(!adif.contains("<NAME:"));
+        assert!(!adif.contains("<QTH:"));
+    }
+
+    #[test]
+    fn test_contact_to_adif_ft8_mode() {
+        let mut c = Contact::new("W1AW".to_string());
+        c.mode = "FT8".to_string();
+        c.frequency = 14.074;
+        c.band = "20m".to_string();
+        let adif = contact_to_adif(&c);
+
+        assert!(adif.contains("<MODE:4>DATA"));
+        assert!(adif.contains("<SUBMODE:3>FT8"));
+    }
+
+    #[test]
+    fn test_contact_to_adif_frequency_format() {
+        let mut c = Contact::new("W1AW".to_string());
+        c.frequency = 14.17500;
+        let adif = contact_to_adif(&c);
+        assert!(adif.contains("<FREQ:"));
+        assert!(adif.contains("14.17500"));
+    }
+
+    #[test]
+    fn test_mode_to_cabrillo() {
+        assert_eq!(mode_to_cabrillo("CW"), 1);
+        assert_eq!(mode_to_cabrillo("cw"), 1);
+        assert_eq!(mode_to_cabrillo("SSB"), 2);
+        assert_eq!(mode_to_cabrillo("PHONE"), 2);
+        assert_eq!(mode_to_cabrillo("FM"), 2);
+        assert_eq!(mode_to_cabrillo("AM"), 2);
+        assert_eq!(mode_to_cabrillo("DIG"), 3);
+        assert_eq!(mode_to_cabrillo("FT8"), 3);
+        assert_eq!(mode_to_cabrillo("FT4"), 3);
+        assert_eq!(mode_to_cabrillo("RTTY"), 3);
+        assert_eq!(mode_to_cabrillo("UNKNOWN"), 2);
+    }
+
+    #[test]
+    fn test_pad_field() {
+        assert_eq!(pad_field("W1AW", 10), "W1AW      ");
+        assert_eq!(pad_field("W1AW", 4), "W1AW");
+        assert_eq!(pad_field("W1AWLONGER", 4), "W1AW");
+        assert_eq!(pad_field("", 5), "     ");
+    }
+
+    #[test]
+    fn test_contact_to_cabrillo() {
+        let mut c = Contact::new("W1AW".to_string());
+        c.frequency = 14.175;
+        c.mode = "CW".to_string();
+        c.rst_sent = "599".to_string();
+        c.rst_recv = "589".to_string();
+        c.qso_date = "2024-01-15".to_string();
+        c.qso_time = "120000".to_string();
+
+        let line = contact_to_cabrillo(&c);
+        assert!(line.starts_with("QSO: 14175 "));
+        assert!(line.contains("W1AW"));
+        assert!(line.contains("20240115"));
+    }
+
+    #[test]
+    fn test_contact_to_cabrillo_ssb() {
+        let mut c = Contact::new("K1ABC".to_string());
+        c.frequency = 14.250;
+        c.mode = "SSB".to_string();
+        c.rst_sent = "59".to_string();
+        c.rst_recv = "59".to_string();
+        c.qso_date = "2024-06-20".to_string();
+        c.qso_time = "143000".to_string();
+
+        let line = contact_to_cabrillo(&c);
+        assert!(line.contains(" 14250 "));
+        assert!(line.contains("K1ABC"));
+    }
+
+    #[test]
+    fn test_cabrillo_config_default() {
+        let config = CabrilloConfig::default();
+        assert_eq!(config.contest, "CQ-WW-SSB");
+        assert_eq!(config.category_operator, "SINGLE-OP");
+        assert_eq!(config.category_transmitter, "ONE");
+        assert_eq!(config.category_power, "HIGH");
+        assert_eq!(config.category_station, "FIXED");
+    }
+
+    #[test]
+    fn test_generate_default_filename_format() {
+        let filename = generate_default_filename();
+        assert!(filename.starts_with("qso_export_"));
+        assert!(filename.ends_with(".adi"));
+        assert!(filename.len() > 15);
+    }
+
+    #[test]
+    fn test_generate_cabrillo_filename_format() {
+        let filename = generate_cabrillo_filename();
+        assert!(filename.starts_with("qso_export_"));
+        assert!(filename.ends_with(".log"));
+        assert!(filename.len() > 15);
+    }
+}
