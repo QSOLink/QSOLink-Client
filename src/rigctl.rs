@@ -253,3 +253,111 @@ pub fn mode_to_string(mode_code: &str) -> &'static str {
         _ => "Unknown",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mode_to_string() {
+        assert_eq!(mode_to_string("0"), "USB");
+        assert_eq!(mode_to_string("1"), "LSB");
+        assert_eq!(mode_to_string("2"), "CW");
+        assert_eq!(mode_to_string("3"), "CWR");
+        assert_eq!(mode_to_string("4"), "AM");
+        assert_eq!(mode_to_string("5"), "FM");
+        assert_eq!(mode_to_string("6"), "WFM");
+        assert_eq!(mode_to_string("7"), "FT8");
+        assert_eq!(mode_to_string("8"), "FT4");
+        assert_eq!(mode_to_string("9"), "RTTY");
+        assert_eq!(mode_to_string("10"), "RTTYR");
+        assert_eq!(mode_to_string("99"), "Unknown");
+        assert_eq!(mode_to_string("invalid"), "Unknown");
+    }
+
+    #[test]
+    fn test_rig_config_default() {
+        let config = RigConfig::default();
+        assert_eq!(config.host, "localhost");
+        assert_eq!(config.port, 4532);
+        assert_eq!(config.poll_interval_ms, 1000);
+        assert!(config.auto_reconnect);
+    }
+
+    #[test]
+    fn test_rig_state_default() {
+        let state = RigState::default();
+        assert_eq!(state.frequency, 0.0);
+        assert_eq!(state.mode, "");
+        assert!(!state.connected);
+        assert!(!state.ptt);
+        assert!(state.error_message.is_none());
+    }
+
+    #[test]
+    fn test_rig_ctl_client_new() {
+        let config = RigConfig::default();
+        let client = RigCtlClient::new(config.clone());
+        assert_eq!(client.config().host, config.host);
+        assert!(!client.state().connected);
+    }
+
+    #[test]
+    fn test_rig_ctl_client_clone() {
+        let config = RigConfig::default();
+        let client = RigCtlClient::new(config.clone());
+        let cloned = client.clone();
+        assert_eq!(cloned.config().host, client.config().host);
+        assert_eq!(cloned.config().port, client.config().port);
+    }
+
+    #[test]
+    fn test_format_frequency_mhz() {
+        let config = RigConfig::default();
+        let mut client = RigCtlClient::new(config);
+        client.state.frequency = 14_175_000.0;
+        assert_eq!(client.format_frequency(), "14.175 MHz");
+    }
+
+    #[test]
+    fn test_format_frequency_khz() {
+        let config = RigConfig::default();
+        let mut client = RigCtlClient::new(config);
+        client.state.frequency = 7_250.0;
+        assert_eq!(client.format_frequency(), "7.250 kHz");
+    }
+
+    #[test]
+    fn test_format_frequency_hz() {
+        let config = RigConfig::default();
+        let mut client = RigCtlClient::new(config);
+        client.state.frequency = 500.0;
+        assert_eq!(client.format_frequency(), "500 Hz");
+    }
+
+    #[test]
+    fn test_format_frequency_zero() {
+        let config = RigConfig::default();
+        let client = RigCtlClient::new(config);
+        assert_eq!(client.format_frequency(), "-- MHz");
+    }
+
+    #[test]
+    fn test_set_and_get_config() {
+        let config = RigConfig::default();
+        let mut client = RigCtlClient::new(config);
+
+        let new_config = RigConfig {
+            host: "rig.local".to_string(),
+            port: 4533,
+            poll_interval_ms: 500,
+            auto_reconnect: false,
+        };
+
+        client.set_config(new_config.clone());
+        assert_eq!(client.get_config().host, "rig.local");
+        assert_eq!(client.get_config().port, 4533);
+        assert_eq!(client.get_config().poll_interval_ms, 500);
+        assert!(!client.get_config().auto_reconnect);
+    }
+}

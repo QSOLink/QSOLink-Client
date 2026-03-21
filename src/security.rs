@@ -282,3 +282,72 @@ pub fn sanitize_for_log(input: &str) -> String {
     let visible = std::cmp::min(4, input.len() / 4);
     format!("{}****", &input[..visible])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_for_log_short() {
+        assert_eq!(sanitize_for_log("abc"), "****");
+        assert_eq!(sanitize_for_log("abcd"), "****");
+        assert_eq!(sanitize_for_log(""), "****");
+    }
+
+    #[test]
+    fn test_sanitize_for_log_normal() {
+        let result = sanitize_for_log("password123");
+        assert!(result.ends_with("****"));
+        assert!(result.starts_with("pa"));
+        assert_eq!(result, "pa****");
+    }
+
+    #[test]
+    fn test_sanitize_for_log_long() {
+        let result = sanitize_for_log("superlongpassword");
+        assert!(result.ends_with("****"));
+        assert_eq!(&result[..4], "supe");
+    }
+
+    #[test]
+    fn test_derive_key_deterministic() {
+        let password = "testpassword";
+        let salt = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+        let key1 = CredentialStore::derive_key(password, &salt);
+        let key2 = CredentialStore::derive_key(password, &salt);
+
+        assert_eq!(key1, key2);
+        assert_eq!(key1.len(), 32);
+    }
+
+    #[test]
+    fn test_derive_key_different_salts() {
+        let password = "testpassword";
+        let salt1 = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let salt2 = [2u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+        let key1 = CredentialStore::derive_key(password, &salt1);
+        let key2 = CredentialStore::derive_key(password, &salt2);
+
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_derive_key_different_passwords() {
+        let salt = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+        let key1 = CredentialStore::derive_key("password1", &salt);
+        let key2 = CredentialStore::derive_key("password2", &salt);
+
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_lotw_sync_state_default() {
+        let state = LotwSyncState::default();
+        assert!(state.last_qsl_timestamp.is_none());
+        assert!(state.last_qsorx_timestamp.is_none());
+        assert!(state.last_sync.is_none());
+    }
+}
