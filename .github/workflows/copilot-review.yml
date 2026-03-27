@@ -13,6 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Request Copilot review
-        uses: github/request-copilot-review@v1
+        uses: github/copilot-pull-request-reviewer@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
