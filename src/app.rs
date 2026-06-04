@@ -987,7 +987,6 @@ impl eframe::App for QsoApp {
                             if ui.button("Test Connection").clicked() {
                                 let config = self.db_config.clone();
                                 let rt = tokio::runtime::Runtime::new().unwrap();
-                                self.connection_test_result = Some("Testing connection...".to_string());
                                 match rt.block_on(async {
                                     let test_db = RemoteDatabase::new(config);
                                     test_db.test_connection().await
